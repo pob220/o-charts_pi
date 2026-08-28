@@ -29,6 +29,7 @@ class ViewPort;
 class Extended_Geometry;
 
 #include "o-charts_pi.h"
+#include "ocpn_plugin_chart_safety.h"
 #include "s52s57.h"
 #include "viewport.h"
 #include "Osenc.h"
@@ -209,6 +210,9 @@ class  eSENCChart : public PlugInChartBaseExtended
 
       ListOfPI_S57Obj *GetObjRuleListAtLatLon(float lat, float lon, float select_radius,
                                                                  PlugIn_ViewPort *VPoint);
+      int VisitChartSafetyGridV1(
+        const OCPN_PluginChartSafetyGridRequestV1 *request,
+        OCPN_PluginChartSafetyGridResultV1 *result);
       wxString CreateObjDescriptions( ListOfPI_S57Obj* obj_list );
       wxString GetObjectAttributeValueAsString( PI_S57Obj *obj, int iatt, wxString curAttrName );
       static wxString GetAttributeDecode( wxString& att, int ival );
@@ -602,7 +606,6 @@ public:
 };
 
 #endif
-
 
 
 

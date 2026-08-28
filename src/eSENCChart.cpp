@@ -36,9 +36,12 @@
 
 #include <sys/stat.h>
 #include <algorithm>          // for std::sort
+#include <cmath>
+#include <set>
 #include <string>
 #include <map>
 #include <unordered_map>
+#include <vector>
 
 #include "o-charts_pi.h"
 #include "eSENCChart.h"
@@ -6769,6 +6772,167 @@ ListOfPI_S57Obj *eSENCChart::GetObjRuleListAtLatLon(float lat, float lon, float 
     return obj_list;
 }
 
+int eSENCChart::VisitChartSafetyGridV1(
+    const OCPN_PluginChartSafetyGridRequestV1 *request,
+    OCPN_PluginChartSafetyGridResultV1 *result)
+{
+    if( !request || !result ||
+        request->struct_size < sizeof(OCPN_PluginChartSafetyGridRequestV1) ||
+        result->struct_size < sizeof(OCPN_PluginChartSafetyGridResultV1) ||
+        request->abi_version != OCPN_PLUGIN_CHART_SAFETY_GRID_ABI_V1 ||
+        !request->visit_object || request->rows == 0 || request->cols == 0 ||
+        request->lat_step <= 0 || request->lon_step <= 0 )
+        return -1;
+
+    const uint64_t cell_count =
+        static_cast<uint64_t>(request->rows) * request->cols;
+    if( cell_count > 65536 ) return -1;
+
+    result->abi_version = OCPN_PLUGIN_CHART_SAFETY_GRID_ABI_V1;
+    result->processed_cells = 0;
+    result->candidate_objects = 0;
+    result->hit_objects = 0;
+    result->reserved = 0;
+    for( uint64_t i = 0; i < cell_count; ++i )
+        if( !request->active_cells || request->active_cells[i] )
+            ++result->processed_cells;
+
+    if( request->plugin_viewport ) {
+        const PlugIn_ViewPort *pi_vp =
+            static_cast<const PlugIn_ViewPort *>(request->plugin_viewport);
+        ViewPort cvp = CreateCompatibleViewport(*pi_vp);
+        PrepareForRender(&cvp, ps52plib);
+    }
+
+    const uint32_t hit_word_count =
+        static_cast<uint32_t>((cell_count + 63) / 64);
+    std::vector<uint64_t> hit_cells(hit_word_count, 0);
+    std::set<S57Obj *> visited;
+
+    const auto object_may_affect_safety = [](S57Obj *obj) {
+        if( !obj ) return false;
+        if( !strncmp(obj->FeatureName, "LNDARE", 6) ||
+            !strncmp(obj->FeatureName, "DEPARE", 6) ||
+            !strncmp(obj->FeatureName, "DRGARE", 6) ||
+            !strncmp(obj->FeatureName, "WRECKS", 6) ||
+            !strncmp(obj->FeatureName, "UWTROC", 6) ||
+            !strncmp(obj->FeatureName, "OBSTRN", 6) )
+            return true;
+        const char *attr = obj->att_array;
+        for( int i = 0; attr && i < obj->n_attr; ++i, attr += 6 )
+            if( !strncmp(attr, "WATLEV", 6) ) return true;
+        return false;
+    };
+
+    const auto visit = [&](ObjRazRules *rule) {
+        if( !rule || !rule->obj || visited.count(rule->obj) ||
+            !object_may_affect_safety(rule->obj) )
+            return;
+        visited.insert(rule->obj);
+        ++result->candidate_objects;
+
+        S57Obj *obj = rule->obj;
+        int min_row = 0;
+        int max_row = static_cast<int>(request->rows) - 1;
+        int min_col = 0;
+        int max_col = static_cast<int>(request->cols) - 1;
+        if( obj->BBObj.GetValid() ) {
+            const double radius = request->select_radius_degrees;
+            min_row = static_cast<int>(floor(
+                (obj->BBObj.GetMinLat() - radius - request->min_lat) /
+                request->lat_step));
+            max_row = static_cast<int>(ceil(
+                (obj->BBObj.GetMaxLat() + radius - request->min_lat) /
+                request->lat_step));
+            min_col = static_cast<int>(floor(
+                (obj->BBObj.GetMinLon() - radius - request->min_lon) /
+                request->lon_step));
+            max_col = static_cast<int>(ceil(
+                (obj->BBObj.GetMaxLon() + radius - request->min_lon) /
+                request->lon_step));
+            min_row = std::max(0, min_row);
+            min_col = std::max(0, min_col);
+            max_row = std::min(static_cast<int>(request->rows) - 1, max_row);
+            max_col = std::min(static_cast<int>(request->cols) - 1, max_col);
+        }
+        if( min_row > max_row || min_col > max_col ) return;
+
+        std::fill(hit_cells.begin(), hit_cells.end(), 0);
+        bool any_hit = false;
+        for( int row = min_row; row <= max_row; ++row ) {
+            const float lat = static_cast<float>(request->min_lat +
+                                                  row * request->lat_step);
+            for( int col = min_col; col <= max_col; ++col ) {
+                const uint32_t index =
+                    static_cast<uint32_t>(row) * request->cols + col;
+                if( request->active_cells && !request->active_cells[index] )
+                    continue;
+                const float lon = static_cast<float>(request->min_lon +
+                                                      col * request->lon_step);
+                if( DoesLatLonSelectObject(lat, lon,
+                                           request->select_radius_degrees,
+                                           obj) ) {
+                    hit_cells[index / 64] |= uint64_t(1) << (index % 64);
+                    any_hit = true;
+                }
+            }
+        }
+        if( !any_hit ) return;
+
+        PI_S57Obj compatible;
+        compatible.bIsClone = true;
+        strncpy(compatible.FeatureName, obj->FeatureName,
+                sizeof(compatible.FeatureName));
+        compatible.FeatureName[sizeof(compatible.FeatureName) - 1] = '\0';
+        compatible.Primitive_type = static_cast<GeoPrim_t>(obj->Primitive_type);
+        compatible.att_array = obj->att_array;
+        compatible.attVal = obj->attVal;
+        compatible.n_attr = obj->n_attr;
+        compatible.x = obj->x;
+        compatible.y = obj->y;
+        compatible.z = obj->z;
+        compatible.npt = obj->npt;
+        compatible.iOBJL = obj->iOBJL;
+        compatible.Index = obj->Index;
+        compatible.geoPt = static_cast<pt *>(obj->geoPt);
+        compatible.geoPtz = obj->geoPtz;
+        compatible.geoPtMulti = obj->geoPtMulti;
+        compatible.m_lat = obj->m_lat;
+        compatible.m_lon = obj->m_lon;
+        ++result->hit_objects;
+        request->visit_object(request->visitor_context, &compatible,
+                              hit_cells.data(), hit_word_count);
+    };
+
+    // This is a semantic safety query, not a display query.  Traverse both
+    // symbol/boundary styles and do not apply ObjectRenderCheck(): that check
+    // includes the current S-52 category, SCAMIN and viewport clipping, any of
+    // which can legitimately hide an object which still affects navigation.
+    // The visited set removes objects represented by both lookup styles.
+    for( int priority = 0; priority < PRIO_NUM; ++priority ) {
+        for( int lookup = 0; lookup < LUPNAME_NUM; ++lookup ) {
+            for( ObjRazRules *rule = razRules[priority][lookup]; rule;
+                 rule = rule->next ) {
+                visit(rule);
+                for( ObjRazRules *child = rule->child; child;
+                     child = child->next )
+                    visit(child);
+            }
+        }
+    }
+    return 1;
+}
+
+extern "C" DECL_EXP int OCPN_PluginChartSafetyGridV1(
+    void *plugin_chart,
+    const OCPN_PluginChartSafetyGridRequestV1 *request,
+    OCPN_PluginChartSafetyGridResultV1 *result)
+{
+    PlugInChartBase *base = static_cast<PlugInChartBase *>(plugin_chart);
+    eSENCChart *chart = dynamic_cast<eSENCChart *>(base);
+    return chart ? chart->VisitChartSafetyGridV1(request, result) : -1;
+}
+
 bool isPointInObjectBoundary( double east, double north, S57Obj *obj );
 
 bool eSENCChart::DoesLatLonSelectObject( float lat, float lon, float select_radius, S57Obj *obj )
@@ -10721,6 +10885,3 @@ Extended_Geometry *eSENCChart::buildExtendedGeom( S57Obj *obj )
 
     return xG;
 }
-
-
-
