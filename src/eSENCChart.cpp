@@ -6857,6 +6857,24 @@ int eSENCChart::VisitChartSafetyGridV1(
         }
         if( min_row > max_row || min_col > max_col ) return;
 
+        // Some OESU area records deliberately defer tessellation until they
+        // are rendered.  A semantic query cannot treat the outline segments
+        // as a line: for large land/depth areas that turns the segment bounding
+        // boxes into enormous false-positive rectangles.  Materialize only
+        // safety-relevant areas which overlap this grid, once per chart.
+        if( obj->Primitive_type == GEO_AREA ) {
+            if( !obj->pPolyTessGeo ) return;
+            if( !obj->pPolyTessGeo->IsOk() ) {
+                if( !obj->pPolyTessGeo->GetDeferredGeometry() &&
+                    obj->m_ls_list )
+                    obj->pPolyTessGeo->SetDeferredGeometry(
+                        buildExtendedGeom(obj));
+                if( obj->pPolyTessGeo->GetDeferredGeometry() )
+                    obj->pPolyTessGeo->BuildDeferredTess();
+            }
+            if( !obj->pPolyTessGeo->IsOk() ) return;
+        }
+
         std::fill(hit_cells.begin(), hit_cells.end(), 0);
         bool any_hit = false;
         for( int row = min_row; row <= max_row; ++row ) {
@@ -7004,6 +7022,10 @@ bool eSENCChart::DoesLatLonSelectObject( float lat, float lon, float select_radi
 //                     return isPointInObjectBoundary( easting, northing, obj );
 //                 }
             }
+            // An area without usable tessellation is unknown, not a line.
+            // Falling through makes its outline segment bounding boxes look
+            // like filled areas and can classify whole sea tiles as land.
+            return false;
         }
 
         case GEO_LINE: {
@@ -7037,12 +7059,28 @@ bool eSENCChart::DoesLatLonSelectObject( float lat, float lon, float select_radi
                     double north = ( ppt->y * yr ) + yo;
                     double east = ( ppt->x * xr ) + xo;
 
-                    //    A slightly less coarse segment bounding box check
+                    // Exact point-to-segment distance after the inexpensive
+                    // expanded segment bounding-box rejection.
                     if( northing >= ( fmin(north, north0) - sel_rad_meters ) ) if( northing
                         <= ( fmax(north, north0) + sel_rad_meters ) ) if( easting
                         >= ( fmin(east, east0) - sel_rad_meters ) ) if( easting
                         <= ( fmax(east, east0) + sel_rad_meters ) ) {
-                            return true;
+                            const double de = east - east0;
+                            const double dn = north - north0;
+                            const double length2 = de * de + dn * dn;
+                            double t = length2 > 0
+                                ? ((easting - east0) * de +
+                                   (northing - north0) * dn) / length2
+                                : 0.0;
+                            t = std::max(0.0, std::min(1.0, t));
+                            const double nearest_east = east0 + t * de;
+                            const double nearest_north = north0 + t * dn;
+                            const double delta_east = easting - nearest_east;
+                            const double delta_north = northing - nearest_north;
+                            if( delta_east * delta_east +
+                                    delta_north * delta_north <=
+                                sel_rad_meters * sel_rad_meters )
+                                return true;
                         }
 
                         north0 = north;
@@ -7082,7 +7120,25 @@ bool eSENCChart::DoesLatLonSelectObject( float lat, float lon, float select_radi
                                 if( northing <= ( fmax(north, north0) + sel_rad_meters ) )
                                     if( easting >= ( fmin(east, east0) - sel_rad_meters ) )
                                         if( easting <= ( fmax(east, east0) + sel_rad_meters ) ) {
-                                            return true;
+                                            const double de = east - east0;
+                                            const double dn = north - north0;
+                                            const double length2 = de * de + dn * dn;
+                                            double t = length2 > 0
+                                                ? ((easting - east0) * de +
+                                                   (northing - north0) * dn) /
+                                                      length2
+                                                : 0.0;
+                                            t = std::max(0.0, std::min(1.0, t));
+                                            const double nearest_east = east0 + t * de;
+                                            const double nearest_north = north0 + t * dn;
+                                            const double delta_east =
+                                                easting - nearest_east;
+                                            const double delta_north =
+                                                northing - nearest_north;
+                                            if( delta_east * delta_east +
+                                                    delta_north * delta_north <=
+                                                sel_rad_meters * sel_rad_meters )
+                                                return true;
                                         }
 
                              north0 = north;
