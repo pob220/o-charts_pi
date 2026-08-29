@@ -27,6 +27,7 @@ class S57Obj;
 class LUPrec;
 class ViewPort;
 class Extended_Geometry;
+class ChartSafetyFeatureIndex;
 
 #include "o-charts_pi.h"
 #include "ocpn_plugin_chart_safety.h"
@@ -310,6 +311,7 @@ protected:
       bool DoesLatLonSelectObject( float lat, float lon, float select_radius, S57Obj *obj );
       bool IsPointInObjArea( float lat, float lon, float select_radius, S57Obj *obj );
       int GetLineFeaturePointArray(S57Obj *obj, void **ret_array);
+      void EnsureChartSafetyFeatureIndex();
 
 
       wxString Get_eHDR_Name( const wxString& name000 );
@@ -383,6 +385,7 @@ protected:
 
 
       ObjRazRules *razRules[PRIO_NUM][LUPNAME_NUM];
+      ChartSafetyFeatureIndex *m_chart_safety_index;
 
 
       //  DEPCNT VALDCO array members
@@ -606,6 +609,5 @@ public:
 };
 
 #endif
-
 
 
