@@ -6792,7 +6792,11 @@ int eSENCChart::VisitChartSafetyGridV1(
     result->processed_cells = 0;
     result->candidate_objects = 0;
     result->hit_objects = 0;
-    result->reserved = 0;
+    // The provider contract permits the semantic land/depth raster derived by
+    // this API to be retained in an identity-scoped safety cache.  This does
+    // not permit exporting or caching decrypted chart geometry/object data.
+    result->result_flags =
+        OCPN_PLUGIN_CHART_SAFETY_RESULT_DERIVED_CACHE_ALLOWED;
     for( uint64_t i = 0; i < cell_count; ++i )
         if( !request->active_cells || request->active_cells[i] )
             ++result->processed_cells;
