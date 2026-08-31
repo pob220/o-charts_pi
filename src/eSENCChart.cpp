@@ -7329,6 +7329,14 @@ extern "C" DECL_EXP int OCPN_PluginChartSafetyGridV1(
     return chart ? chart->VisitChartSafetyGridV1(request, result) : -1;
 }
 
+extern "C" DECL_EXP const char *OCPN_PluginChartSafetyIdentityV1(void)
+{
+    // This is deliberately independent of the shared-library path, size and
+    // mtime so a compatible rebuild keeps its semantic atlas. Bump the value
+    // whenever the provider's classification semantics change.
+    return "o-charts-chart-safety-exact-index-raster-v1";
+}
+
 bool isPointInObjectBoundary( double east, double north, S57Obj *obj );
 
 bool eSENCChart::DoesLatLonSelectObject( float lat, float lon, float select_radius, S57Obj *obj )
